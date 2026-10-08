@@ -9,15 +9,18 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 
 class WakeService : Service() {
     private lateinit var brain: Brain
-    private lateinit var ear: Ear
+    private var vear: VoskEar? = null
+    private var wl: PowerManager.WakeLock? = null
     private val h = Handler(Looper.getMainLooper())
-    private var awaiting = false
-    private var alive = true
+    private var awaitingUntil = 0L
+    private val wake = Regex("\\b(jarvis|jarvish|jervis|jarves|jarvi|travis|service|jar vis)\\b")
 
     override fun onBind(i: Intent?): IBinder? = null
+    override fun onStartCommand(i: Intent?, f: Int, id: Int) = START_STICKY
 
     override fun onCreate() {
         super.onCreate()
@@ -27,28 +30,29 @@ class WakeService : Service() {
             .setContentText("Say \"Hey Jarvis\" followed by a command").setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE) else startForeground(1, n)
         brain = Brain(this)
-        ear = Ear(this, {}) { onHeard(it) }
-        h.postDelayed({ if (alive) ear.start() }, 1000)
+        val m = VoskModel.load(this)
+        if (m == null) { stopSelf(); return }
+        wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:wake").apply { acquire() }
+        vear = VoskEar(m, {}, {}) { onHeard(it) }
+        vear?.start(true)
     }
 
-    private fun again() { h.postDelayed({ if (alive) ear.start() }, 400) }
-
-    private fun run(cmd: String) { brain.handle(cmd) { out -> brain.speak(out) { again() } } }
-
-    private fun onHeard(r: String?) {
-        if (!alive) return
-        val t = r?.lowercase()
-        if (t != null) {
-            if (awaiting) { awaiting = false; run(t); return }
-            val i = t.indexOf("jarvis")
-            if (i >= 0) {
-                val cmd = t.substring(i + 6).trim(' ', ',', '.')
-                if (cmd.isEmpty()) { awaiting = true; brain.speak("Yes?") { again() } } else run(cmd)
-                return
-            }
-        }
-        again()
+    private fun onHeard(text: String) {
+        val t = text.lowercase()
+        if (System.currentTimeMillis() < awaitingUntil) { awaitingUntil = 0; run(t); return }
+        val m = wake.find(t) ?: return
+        val cmd = t.substring(m.range.last + 1).trim(' ', ',', '.')
+        if (cmd.isEmpty()) say("Yes?") { awaitingUntil = System.currentTimeMillis() + 8000 } else run(cmd)
     }
 
-    override fun onDestroy() { alive = false; ear.stop(); brain.shutdown(); super.onDestroy() }
+    private fun say(s: String, done: () -> Unit = {}) {
+        vear?.muted = true
+        brain.speak(s) { h.postDelayed({ vear?.muted = false }, 400); done() }
+    }
+
+    private fun run(cmd: String) { brain.handle(cmd) { say(it) } }
+
+    override fun onDestroy() {
+        vear?.stop(); brain.shutdown(); wl?.takeIf { it.isHeld }?.release(); super.onDestroy()
+    }
 }

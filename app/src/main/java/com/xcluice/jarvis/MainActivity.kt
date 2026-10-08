@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var updBtn: TextView
     private lateinit var brain: Brain
     private var ear: Ear? = null
+    private var vear: VoskEar? = null
     private var listening = false
     private val idle = "Tap the orb and talk"
 
@@ -49,6 +50,15 @@ class MainActivity : Activity() {
         updBtn = pill("") {}; updBtn.visibility = View.GONE; root.addView(updBtn)
         setContentView(root)
         refreshWake()
+        Thread {
+            if (!VoskModel.installed(this)) {
+                runOnUiThread { status.text = "Downloading voice engine..." }
+                val ok = VoskModel.download(this) { p -> runOnUiThread { status.text = "Downloading voice engine... $p%" } }
+                if (!ok) { runOnUiThread { status.text = "Voice download failed - using phone speech. Restart app to retry" }; return@Thread }
+            }
+            VoskModel.load(this)
+            runOnUiThread { status.text = idle }
+        }.start()
         Brain.checkUpdate { url ->
             updBtn.text = "Update available - tap to download"; updBtn.visibility = View.VISIBLE
             updBtn.setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -60,7 +70,7 @@ class MainActivity : Activity() {
     private fun handleLaunch(i: Intent?) { if (i?.action == Intent.ACTION_ASSIST || i?.action == Intent.ACTION_VOICE_COMMAND || i?.getBooleanExtra("listen", false) == true) listen() }
 
     private fun toggle() {
-        if (listening) { ear?.stop(); listening = false; orb.state = 0; status.text = idle } else { brain.stopSpeaking(); listen() }
+        if (listening) { ear?.stop(); vear?.stop(); listening = false; orb.state = 0; status.text = idle } else { brain.stopSpeaking(); listen() }
     }
 
     private fun listen() {
@@ -68,8 +78,14 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS), 1); return
         }
         listening = true; orb.state = 1; status.text = "Listening..."
-        ear = Ear(this, { orb.level = ((it + 2f) / 12f).coerceIn(0f, 1f) }) { r -> onHeard(r) }
-        ear?.start()
+        val m = VoskModel.model
+        if (m != null) {
+            vear = VoskEar(m, { status.text = "\u201C$it\u201D" }, { orb.level = it }) { r -> onHeard(r) }
+            vear?.start(false)
+        } else {
+            ear = Ear(this, { orb.level = ((it + 2f) / 12f).coerceIn(0f, 1f) }) { r -> onHeard(r) }
+            ear?.start()
+        }
     }
 
     override fun onRequestPermissionsResult(c: Int, p: Array<out String>, g: IntArray) {
@@ -78,7 +94,7 @@ class MainActivity : Activity() {
 
     private fun onHeard(r: String?) {
         listening = false
-        if (r == null) { orb.state = 0; status.text = "Didn't catch that. Tap to retry"; return }
+        if (r.isNullOrBlank()) { orb.state = 0; status.text = "Didn't catch that. Tap to retry"; return }
         status.text = "\u201C$r\u201D"; orb.state = 2
         brain.handle(r) { out ->
             reply.text = out; orb.state = 3
@@ -98,6 +114,11 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "Allow 'Display over other apps' so Jarvis can open apps while you're elsewhere", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))); return
             }
+            if (!VoskModel.installed(this)) { Toast.makeText(this, "Voice engine is still downloading", Toast.LENGTH_LONG).show(); return }
+            if (!getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
+                Toast.makeText(this, "Allow unrestricted battery so Jarvis keeps listening", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))); return
+            }
             startForegroundService(Intent(this, WakeService::class.java)); p.edit().putBoolean("wake", true).apply()
         }
         refreshWake()
@@ -108,5 +129,5 @@ class MainActivity : Activity() {
         catch (e: Exception) { startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
     }
 
-    override fun onDestroy() { ear?.stop(); brain.shutdown(); super.onDestroy() }
+    override fun onDestroy() { ear?.stop(); vear?.stop(); brain.shutdown(); super.onDestroy() }
 }

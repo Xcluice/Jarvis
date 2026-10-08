@@ -47,7 +47,17 @@ class Brain(private val ctx: Context) {
     private var ready = false
     private val hist = ArrayList<Pair<String, String>>()
 
-    init { tts = TextToSpeech(ctx) { if (it == TextToSpeech.SUCCESS) { tts?.language = Locale.getDefault(); ready = true } } }
+    init {
+        tts = TextToSpeech(ctx) { st ->
+            if (st == TextToSpeech.SUCCESS) tts?.let { t ->
+                val r = t.setLanguage(Locale.UK)
+                if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) t.language = Locale.getDefault()
+                else t.voices?.firstOrNull { v -> !v.isNetworkConnectionRequired && listOf("gbd", "rjs", "gbb").any { it in v.name } }?.let { t.voice = it }
+                t.setPitch(0.55f); t.setSpeechRate(0.9f)
+                ready = true
+            }
+        }
+    }
 
     fun speak(t: String, done: (() -> Unit)? = null) {
         val s = tts
@@ -84,7 +94,8 @@ class Brain(private val ctx: Context) {
 
     private fun go(i: Intent) = ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 
-    private fun yt(q: String): String {
+    private fun yt(q0: String): String {
+        val q = q0.replace(Regex("\\b(juani|wani|wonie|wuhani|one e|waney|wanny|wunny|juwani|wuani|wahani)\\b"), "wuanii")
         try { go(Intent(Intent.ACTION_SEARCH).setPackage("com.google.android.youtube").putExtra("query", q)) }
         catch (e: Exception) { go(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(q, "UTF-8")))) }
         return "Searching YouTube for $q"
